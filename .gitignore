@@ -1,0 +1,12 @@
+node_modules
+.pnpm-store
+.env
+.env.*
+!.env.example
+dist
+.next
+.expo
+.tauri
+coverage
+uploads/*
+!uploads/.gitkeep
