@@ -109,7 +109,7 @@ function durationToMs(value: string): number {
   return amount * factors[unit];
 }
 
-const REFRESH_TTL_MS = durationToMs(REFRESH_TTL);
+const REFRESH_TTL_MS = Math.max(durationToMs(REFRESH_TTL), 45 * 60 * 1000);
 
 class HttpError extends Error {
   status: number;
@@ -147,7 +147,7 @@ function serializeCookie(name: string, value: string, options: { maxAge: number;
     `${name}=${encodeURIComponent(value)}`,
     `Path=${options.path || '/'}`,
     `Max-Age=${options.maxAge}`,
-    'SameSite=Lax',
+    'SameSite=None',
   ];
   if (options.httpOnly) pieces.push('HttpOnly');
   if (SECURE_COOKIES) pieces.push('Secure');
@@ -317,7 +317,7 @@ export function buildApp(options: BuildOptions = {}): FastifyInstance {
     });
     const csrfToken = randomBytes(24).toString('base64url');
     setAuthCookies(reply, `${session.id}.${secret}`, csrfToken);
-    return { accessToken: signAccess(user, session.id), session };
+    return { accessToken: signAccess(user, session.id), session, csrfToken };
   }
 
   async function revokeFamily(familyId: string | null) {
@@ -385,6 +385,7 @@ export function buildApp(options: BuildOptions = {}): FastifyInstance {
     setAuthCookies(reply, `${rotated.id}.${newSecret}`, csrfToken);
     return {
       accessToken: signAccess(session.user, rotated.id),
+      csrfToken,
       user: {
         id: session.user.id,
         username: session.user.username,
@@ -522,9 +523,10 @@ export function buildApp(options: BuildOptions = {}): FastifyInstance {
       return reply.code(401).send({ error: 'Invalid credentials', code: 'INVALID_CREDENTIALS' });
     }
     await prisma.device.updateMany({ where: { userId: user.id }, data: { lastSeenAt: new Date() } }).catch(() => undefined);
-    const { accessToken } = await createSession(req, reply, user, input.device);
+    const { accessToken, csrfToken } = await createSession(req, reply, user, input.device);
     return {
       accessToken,
+      csrfToken,
       user: {
         id: user.id,
         username: user.username,
@@ -1181,6 +1183,7 @@ return { email: input.email };
         sender: { select: { id: true, username: true, displayName: true, profilePictureKey: true } },
         receipts: true,
         attachment: true,
+        replyTo: { include: { sender: { select: { id: true, username: true, displayName: true, profilePictureKey: true } } } },
       },
     });
   });
@@ -1199,7 +1202,7 @@ return { email: input.email };
       const end = new Date(start); end.setDate(end.getDate() + 1);
       where.createdAt = { gte: start, lt: end };
     }
-    const results = await prisma.message.findMany({ where, orderBy: { createdAt: 'asc' }, take: 500, include: { sender: { select: { id: true, username: true, displayName: true, profilePictureKey: true } }, receipts: true, attachment: true } });
+    const results = await prisma.message.findMany({ where, orderBy: { createdAt: 'asc' }, take: 500, include: { sender: { select: { id: true, username: true, displayName: true, profilePictureKey: true } }, receipts: true, attachment: true, replyTo: { include: { sender: { select: { id: true, username: true, displayName: true, profilePictureKey: true } } } } } });
     return results;
   });
 
@@ -1941,6 +1944,7 @@ return { email: input.email };
           type?: 'TEXT' | 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE';
           clientMessageId?: string;
           attachmentId?: string;
+          replyToId?: string;
         }) => {
           try {
             const member = await prisma.conversationMember.findUnique({
@@ -1958,6 +1962,12 @@ return { email: input.email };
               return;
             }
             if (!body && !attachment) return;
+            let replyToId: string | null = null;
+            if (payload.replyToId) {
+              const target = await prisma.message.findFirst({ where: { id: payload.replyToId, conversationId: payload.conversationId }, select: { id: true } });
+              if (!target) { socket.emit('message:error', { clientMessageId: payload.clientMessageId, message: 'The message you are replying to is unavailable.' }); return; }
+              replyToId = target.id;
+            }
 
             const message = await prisma.$transaction(async (tx) => {
               const created = await tx.message.create({
@@ -1967,6 +1977,7 @@ return { email: input.email };
                   body: body || null,
                   type: attachment ? (attachment.mimeType.startsWith('audio/') ? 'AUDIO' : attachment.mimeType.startsWith('image/') ? 'IMAGE' : attachment.mimeType.startsWith('video/') ? 'VIDEO' : 'FILE') : payload.type || 'TEXT',
                   clientMessageId: payload.clientMessageId,
+                  replyToId,
                 },
               });
               if (attachment) {
@@ -1982,6 +1993,7 @@ return { email: input.email };
                   sender: { select: { id: true, username: true, displayName: true, profilePictureKey: true } },
                   receipts: true,
                   attachment: true,
+                  replyTo: { include: { sender: { select: { id: true, username: true, displayName: true, profilePictureKey: true } } } },
                 },
               });
             });
