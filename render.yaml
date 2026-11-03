@@ -1,0 +1,53 @@
+services:
+  - type: web
+    name: connectly-api
+    runtime: node
+    plan: free
+    buildCommand: corepack enable && corepack prepare pnpm@10.12.1 --activate && pnpm install --no-frozen-lockfile && pnpm --filter @connectly/server prisma:generate && pnpm --filter @connectly/server build
+    startCommand: pnpm --filter @connectly/server prisma:deploy && pnpm --filter @connectly/server start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_ACCESS_SECRET
+        generateValue: true
+      - key: WEB_ORIGIN
+        sync: false
+      - key: ADMIN_USERNAME
+        value: admin
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: LIVEKIT_URL
+        sync: false
+      - key: LIVEKIT_API_KEY
+        sync: false
+      - key: LIVEKIT_API_SECRET
+        sync: false
+      - key: BREVO_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
+      - key: EMAIL_FROM_NAME
+        value: Connectly
+      - key: APP_BASE_URL
+        sync: false
+      - key: CALL_RING_TIMEOUT_SECONDS
+        value: "30"
+      - key: MAX_UPLOAD_MB
+        value: "100"
+      - key: MAX_VOICE_MB
+        value: "10"
+      - key: MAX_VOICE_DURATION_SEC
+        value: "120"
+      - key: ACCESS_TOKEN_TTL
+        value: 30m
+      - key: REFRESH_TOKEN_TTL
+        value: 30d
+      - key: PRESENCE_GRACE_MS
+        value: "8000"
+      - key: PRESENCE_STALE_MS
+        value: "70000"
+      - key: PRESENCE_SWEEP_MS
+        value: "15000"

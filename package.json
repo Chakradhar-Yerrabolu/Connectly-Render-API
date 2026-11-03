@@ -1,0 +1,16 @@
+{
+  "name": "connectly",
+  "version": "1.0.0",
+  "private": true,
+  "packageManager": "pnpm@10.12.1",
+  "scripts": {
+    "dev:server": "pnpm --filter @connectly/server dev",
+    "dev:web": "pnpm --filter @connectly/web dev",
+    "dev:mobile": "pnpm --filter @connectly/mobile start",
+    "build": "pnpm -r build",
+    "db:generate": "pnpm --filter @connectly/server prisma:generate",
+    "db:migrate": "pnpm --filter @connectly/server prisma:migrate",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck"
+  }
+}
