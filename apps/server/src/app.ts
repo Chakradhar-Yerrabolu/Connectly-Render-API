@@ -650,8 +650,24 @@ export function buildApp(options: BuildOptions = {}): FastifyInstance {
     const existing = await prisma.user.findUnique({ where: { email: input.email }, select: { id: true } });
     if (existing) return reply.code(409).send({ error: 'This email address is already associated with another account.' });
     try {
-      const updated = await prisma.user.update({ where: { id: me.id, email: null }, data: { email: input.email }, select: { email: true } });
-      return { email: updated.email };
+
+      const result = await prisma.user.updateMany({
+  where: {
+    id: me.id,
+    email: null
+  },
+  data: {
+    email: input.email
+  }
+});
+
+if (result.count !== 1) {
+  return reply.code(409).send({
+    error: 'An email address has already been saved.'
+  });
+}
+
+return { email: input.email };
     } catch (error) {
       if ((error as { code?: string })?.code === 'P2002' || (error as { code?: string })?.code === 'P2025') return reply.code(409).send({ error: 'An email address has already been saved or this address is in use.' });
       throw error;
