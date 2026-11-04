@@ -36,6 +36,7 @@ const SECURE_COOKIES = process.env.NODE_ENV === 'production';
 const REFRESH_COOKIE = 'connectly_refresh';
 const CSRF_COOKIE = 'connectly_csrf';
 const WEB_ORIGIN = process.env.WEB_ORIGIN || 'http://localhost:3000';
+const ALLOWED_WEB_ORIGINS = WEB_ORIGIN.split(',').map((item) => item.trim()).filter(Boolean);
 // Temporary local admin defaults. Override these in the server .env before deployment.
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '1234567890';
@@ -45,6 +46,7 @@ const PRESENCE_SWEEP_MS = Number(process.env.PRESENCE_SWEEP_MS || 15000);
 const MAX_VOICE_MB = Number(process.env.MAX_VOICE_MB || 10);
 const MAX_VOICE_DURATION_SEC = Number(process.env.MAX_VOICE_DURATION_SEC || 120);
 const CALL_RING_TIMEOUT_SECONDS = Math.max(10, Math.min(120, Number(process.env.CALL_RING_TIMEOUT_SECONDS || 30)));
+const ROTATION_GRACE_MS = Math.max(1000, Number(process.env.REFRESH_ROTATION_GRACE_MS || 10000));
 
 function escapeEmailHtml(value: string): string {
   return value.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' } as Record<string, string>)[char] || char);
@@ -147,7 +149,7 @@ function serializeCookie(name: string, value: string, options: { maxAge: number;
     `${name}=${encodeURIComponent(value)}`,
     `Path=${options.path || '/'}`,
     `Max-Age=${options.maxAge}`,
-    'SameSite=None',
+    `SameSite=${SECURE_COOKIES ? 'None' : 'Lax'}`,
   ];
   if (options.httpOnly) pieces.push('HttpOnly');
   if (SECURE_COOKIES) pieces.push('Secure');
@@ -161,6 +163,10 @@ function setAuthCookies(reply: FastifyReply, refreshToken: string, csrfToken: st
   ]);
 }
 
+function setCsrfCookie(reply: FastifyReply, csrfToken: string) {
+  reply.header('Set-Cookie', serializeCookie(CSRF_COOKIE, csrfToken, { maxAge: Math.floor(REFRESH_TTL_MS / 1000), path: '/' }));
+}
+
 function clearAuthCookies(reply: FastifyReply) {
   reply.header('Set-Cookie', [
     serializeCookie(REFRESH_COOKIE, '', { maxAge: 0, httpOnly: true, path: '/api/v1/auth' }),
@@ -171,8 +177,7 @@ function clearAuthCookies(reply: FastifyReply) {
 function verifyCsrf(req: FastifyRequest) {
   const origin = req.headers.origin;
   if (origin) {
-    const allowed = WEB_ORIGIN.split(',').map((item) => item.trim());
-    if (!allowed.includes(origin)) throw new HttpError(403, 'Origin not allowed', 'BAD_ORIGIN');
+    if (!ALLOWED_WEB_ORIGINS.includes(origin)) throw new HttpError(403, 'Origin not allowed', 'BAD_ORIGIN');
   }
   const cookie = getCookie(req, CSRF_COOKIE);
   const header = req.headers['x-csrf-token'];
@@ -261,6 +266,7 @@ export function buildApp(options: BuildOptions = {}): FastifyInstance {
     if (payload.sid) {
       const session = await prisma.session.findUnique({ where: { id: payload.sid } });
       if (!session || session.revokedAt) throw new HttpError(401, 'Session revoked', 'SESSION_REVOKED');
+      if (session.expiresAt.getTime() <= Date.now()) throw new HttpError(401, 'Session expired', 'SESSION_EXPIRED');
     }
     return user;
   }
@@ -340,8 +346,23 @@ export function buildApp(options: BuildOptions = {}): FastifyInstance {
     if (!session) throw new HttpError(401, 'Invalid refresh token', 'INVALID_REFRESH_TOKEN');
 
     if (session.revokedAt) {
-      await revokeFamily(session.tokenFamilyId);
-      clearAuthCookies(reply);
+      const replacement = session.tokenFamilyId
+        ? await prisma.session.findFirst({
+            where: {
+              tokenFamilyId: session.tokenFamilyId,
+              revokedAt: null,
+              createdAt: {
+                gte: new Date(session.revokedAt.getTime() - ROTATION_GRACE_MS),
+                lte: new Date(session.revokedAt.getTime() + ROTATION_GRACE_MS),
+              },
+            },
+            orderBy: { createdAt: 'desc' },
+          })
+        : null;
+      if (!replacement) {
+        await revokeFamily(session.tokenFamilyId);
+        clearAuthCookies(reply);
+      }
       throw new HttpError(401, 'Refresh token reuse detected', 'TOKEN_REUSED');
     }
     if (session.expiresAt.getTime() <= Date.now() || (session.familyExpiresAt && session.familyExpiresAt.getTime() <= Date.now())) {
@@ -447,7 +468,10 @@ export function buildApp(options: BuildOptions = {}): FastifyInstance {
   }
 
   app.register(helmet);
-  app.register(cors, { origin: WEB_ORIGIN.split(',').map((item) => item.trim()), credentials: true });
+  if (ALLOWED_WEB_ORIGINS.includes('*')) {
+    throw new Error('WEB_ORIGIN must contain explicit origins when credentialed CORS is enabled.');
+  }
+  app.register(cors, { origin: ALLOWED_WEB_ORIGINS, credentials: true });
   app.register(jwt, { secret: jwtSecret });
   app.register(rateLimit, {
     max: process.env.NODE_ENV === 'test' ? 100000 : 100,
@@ -541,6 +565,12 @@ export function buildApp(options: BuildOptions = {}): FastifyInstance {
   });
 
   app.post('/api/v1/auth/refresh', async (req, reply) => rotateSession(req, reply));
+
+  app.get('/api/v1/auth/csrf', async (req, reply) => {
+    const csrfToken = getCookie(req, CSRF_COOKIE) || randomBytes(24).toString('base64url');
+    if (!getCookie(req, CSRF_COOKIE)) setCsrfCookie(reply, csrfToken);
+    return { csrfToken };
+  });
 
   app.post('/api/v1/auth/logout', async (req, reply) => {
     const raw = getCookie(req, REFRESH_COOKIE);

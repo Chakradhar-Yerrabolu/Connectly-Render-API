@@ -44,8 +44,17 @@ Set these in Render's Environment page. Never commit real values.
 | `EMAIL_FROM` | Sender address verified in Brevo (optional if email is disabled) |
 | `EMAIL_FROM_NAME` | `Connectly` |
 | `APP_BASE_URL` | Exact deployed frontend origin |
+| `ACCESS_TOKEN_TTL` | Access-token lifetime, for example `30m`; refresh restores access after this expires |
+| `REFRESH_TOKEN_TTL` | Refresh-session lifetime, for example `30d`; values below 45 minutes are raised to 45 minutes |
+| `REFRESH_ROTATION_GRACE_MS` | Short concurrency grace window for simultaneous refresh requests; default `10000` |
 
 Render provides `PORT` automatically. Do not hardcode it. `NODE_ENV` is set to `production` in `render.yaml`.
+
+## Cross-origin authentication
+
+Production refresh cookies are HttpOnly, Secure, `SameSite=None`, scoped to `/api/v1/auth`, and are sent only by credentialed requests from the explicit `WEB_ORIGIN`. The frontend must send `credentials: 'include'` and use the `csrfToken` returned by login/refresh or `GET /api/v1/auth/csrf` as `X-CSRF-Token`.
+
+Vercel and the default `onrender.com` hostname are different sites. Browser third-party-cookie blocking can prevent this architecture from working even with correct CORS and cookie settings. For reliable production sessions, use a custom domain with the frontend and API on the same site (for example `app.example.com` and `api.example.com`), or proxy the API through the frontend's custom domain. Do not respond to cookie failures by disabling CSRF or credential checks.
 
 ## Database migrations
 
@@ -73,5 +82,6 @@ A five-minute monitor can reduce idle sleeping, but cannot guarantee uptime or p
 2. Confirm Render logs show successful Prisma migrations and API startup.
 3. Configure the frontend's `NEXT_PUBLIC_API_URL` to the Render API origin, then redeploy the frontend.
 4. Set `WEB_ORIGIN` to the exact Vercel production URL.
-5. Test registration/login, two-user messaging, blocking/reporting, admin moderation, and LiveKit calls.
-6. Do not publish production admin credentials or API secrets.
+5. Ensure frontend requests use credentials and store the returned `csrfToken` (or call `GET /api/v1/auth/csrf` on startup before refresh). Never try to read the HttpOnly refresh cookie.
+6. Test registration/login, page refresh, access-token expiry and refresh, two-user messaging, blocking/reporting, admin moderation, and LiveKit calls.
+7. Do not publish production admin credentials or API secrets.

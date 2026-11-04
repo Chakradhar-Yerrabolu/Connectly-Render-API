@@ -45,6 +45,8 @@ services:
         value: 30m
       - key: REFRESH_TOKEN_TTL
         value: 30d
+      - key: REFRESH_ROTATION_GRACE_MS
+        value: "10000"
       - key: PRESENCE_GRACE_MS
         value: "8000"
       - key: PRESENCE_STALE_MS

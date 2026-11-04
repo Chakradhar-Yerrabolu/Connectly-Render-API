@@ -181,6 +181,35 @@ describe('authentication and sessions', () => {
     expect(noCsrf.json().code).toBe('CSRF_FAILED');
   });
 
+  it('does not revoke the winning session during concurrent refresh', async () => {
+    const user = await createUser('concurrent');
+    const requests = await Promise.all(
+      Array.from({ length: 2 }, () =>
+        app.inject({
+          method: 'POST',
+          url: '/api/v1/auth/refresh',
+          headers: { cookie: user.cookieHeader, 'x-csrf-token': user.csrf },
+        }),
+      ),
+    );
+    expect(requests.some((response) => response.statusCode === 200)).toBe(true);
+    expect(requests.filter((response) => response.statusCode === 401).map((response) => response.json().code)).toEqual(
+      expect.arrayContaining(['TOKEN_REUSED']),
+    );
+    const activeSessions = await prisma.session.count({
+      where: { userId: user.id, revokedAt: null, expiresAt: { gt: new Date() } },
+    });
+    expect(activeSessions).toBe(1);
+  });
+
+  it('bootstraps a CSRF token without exposing the refresh token', async () => {
+    const csrf = await app.inject({ method: 'GET', url: '/api/v1/auth/csrf' });
+    expect(csrf.statusCode).toBe(200);
+    expect(csrf.json().csrfToken).toBeTruthy();
+    expect(String(csrf.headers['set-cookie'])).toContain('connectly_csrf=');
+    expect(String(csrf.headers['set-cookie'])).not.toContain('HttpOnly');
+  });
+
   it('logs out and revokes the session', async () => {
     const user = await createUser('logout');
     const logout = await app.inject({
